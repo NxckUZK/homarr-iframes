@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/diogovalentte/homarr-iframes/src/config"
 )
@@ -16,7 +17,14 @@ type Jellyfin struct {
 
 var j *Jellyfin
 
+// newMutex serializes New() calls, otherwise concurrent requests can each
+// build their own instance and race on the package singleton
+var newMutex sync.Mutex
+
 func New() (*Jellyfin, error) {
+	newMutex.Lock()
+	defer newMutex.Unlock()
+
 	if j != nil {
 		return j, nil
 	}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 func (j *Jellyfin) GetLatestItems(limit, queryLimit int, userId, parentId, includeItemTypes string) ([]*Item, error) {
@@ -61,7 +62,9 @@ func (j *Jellyfin) GetLatestItems(limit, queryLimit int, userId, parentId, inclu
 	return latestItems, nil
 }
 
-func (j *Jellyfin) GetSessions(limit, activeWithinSeconds int) ([]*Session, error) {
+// GetSessions returns the sessions that are currently playing something.
+// Idle sessions and sessions of users in excludedUsers (lowercase usernames) are left out.
+func (j *Jellyfin) GetSessions(limit, activeWithinSeconds int, excludedUsers map[string]bool) ([]*Session, error) {
 	var jellyfinURL string = j.InternalAddress + "/Sessions"
 
 	if activeWithinSeconds < 1 {
@@ -78,35 +81,44 @@ func (j *Jellyfin) GetSessions(limit, activeWithinSeconds int) ([]*Session, erro
 		return nil, fmt.Errorf("error getting sessions: %w", err)
 	}
 
+	playingSessions := make([]*Session, 0, len(sessions))
 	for _, session := range sessions {
+		if session.NowPlayingItem == nil {
+			continue
+		}
+		if excludedUsers[strings.ToLower(session.UserName)] {
+			continue
+		}
+
 		session.UserAvatarURL = fmt.Sprintf("%s/Users/%s/Images/Primary",
 			j.InternalAddress, session.UserID)
 
-		if session.NowPlayingItem != nil {
-			itemID := session.NowPlayingItem.ID
+		itemID := session.NowPlayingItem.ID
 
-			if session.NowPlayingItem.SeriesID != "" {
-				itemID = session.NowPlayingItem.SeriesID
+		if session.NowPlayingItem.SeriesID != "" {
+			itemID = session.NowPlayingItem.SeriesID
 
-				session.NowPlayingItem.BackdropImageURL = fmt.Sprintf("%s/Items/%s/Images/Backdrop",
-					j.InternalAddress, itemID)
+			session.NowPlayingItem.BackdropImageURL = fmt.Sprintf("%s/Items/%s/Images/Backdrop",
+				j.InternalAddress, itemID)
 
-				session.NowPlayingItem.EpisodeURL = fmt.Sprintf("%s/web/#/details?id=%s&serverId=%s",
-					j.Address, session.NowPlayingItem.ID, session.NowPlayingItem.ServerId)
-			} else if len(session.NowPlayingItem.BackdropImageTags) > 0 {
-				session.NowPlayingItem.BackdropImageURL = fmt.Sprintf("%s/Items/%s/Images/Backdrop?tag=%s",
-					j.InternalAddress, itemID, session.NowPlayingItem.BackdropImageTags[0])
-			}
-
-			if primaryTag, hasPrimary := session.NowPlayingItem.ImageTags["Primary"]; hasPrimary {
-				session.NowPlayingItem.PrimaryImageURL = fmt.Sprintf("%s/Items/%s/Images/Primary?tag=%s",
-					j.InternalAddress, itemID, primaryTag)
-			}
-
-			session.NowPlayingItem.ItemURL = fmt.Sprintf("%s/web/#/details?id=%s&serverId=%s",
-				j.Address, itemID, session.NowPlayingItem.ServerId)
+			session.NowPlayingItem.EpisodeURL = fmt.Sprintf("%s/web/#/details?id=%s&serverId=%s",
+				j.Address, session.NowPlayingItem.ID, session.NowPlayingItem.ServerId)
+		} else if len(session.NowPlayingItem.BackdropImageTags) > 0 {
+			session.NowPlayingItem.BackdropImageURL = fmt.Sprintf("%s/Items/%s/Images/Backdrop?tag=%s",
+				j.InternalAddress, itemID, session.NowPlayingItem.BackdropImageTags[0])
 		}
+
+		if primaryTag, hasPrimary := session.NowPlayingItem.ImageTags["Primary"]; hasPrimary {
+			session.NowPlayingItem.PrimaryImageURL = fmt.Sprintf("%s/Items/%s/Images/Primary?tag=%s",
+				j.InternalAddress, itemID, primaryTag)
+		}
+
+		session.NowPlayingItem.ItemURL = fmt.Sprintf("%s/web/#/details?id=%s&serverId=%s",
+			j.Address, itemID, session.NowPlayingItem.ServerId)
+
+		playingSessions = append(playingSessions, session)
 	}
+	sessions = playingSessions
 
 	if limit > 0 && len(sessions) > limit {
 		sessions = sessions[:limit]

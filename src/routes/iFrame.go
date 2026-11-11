@@ -42,6 +42,7 @@ func IFrameRoutes(group *gin.RouterGroup) {
 // @Param limit query int false "Limits the number of items in the iFrame." Example(20)
 // @Param api_url query string true "API URL used by your browser. Used by the iFrames to check any update, if there is an update, the iFrame reloads. If not specified, the iFrames will never try to reload." Example(https://sub.domain.com)
 // @Param activeWithinSeconds query int false "Only show sessions active within this many seconds" Example(60)
+// @Param excludedUsers query string false "Comma-separated list of usernames whose sessions are hidden (case-insensitive)." Example(admin,test)
 // @Router /iframe/jellyfin/sessions [get]
 func JellyfinSessionsiFrameHandler(c *gin.Context) {
 	j, err := jellyfin.New()

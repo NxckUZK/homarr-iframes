@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -56,7 +58,10 @@ func (j *Jellyfin) GetSessionsiFrame(c *gin.Context) {
 		}
 	}
 
-	sessions, err := j.GetSessions(limit, activeWithinSeconds)
+	excludedUsersParam := c.Query("excludedUsers")
+	excludedUsers := parseExcludedUsers(excludedUsersParam)
+
+	sessions, err := j.GetSessions(limit, activeWithinSeconds, excludedUsers)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": fmt.Errorf("couldn't get items: %s", err.Error())})
 		return
@@ -70,11 +75,14 @@ func (j *Jellyfin) GetSessionsiFrame(c *gin.Context) {
 			if activeWithinSeconds > 0 {
 				apiURLPath += "&activeWithinSeconds=" + strconv.Itoa(activeWithinSeconds)
 			}
+			if excludedUsersParam != "" {
+				apiURLPath += "&excludedUsers=" + url.QueryEscape(excludedUsersParam)
+			}
 		}
 		backgroundImgURL := "https://avatars.githubusercontent.com/u/45698031?s=280&v=4"
 		html = sources.GetBaseNothingToShowiFrame(theme, backgroundImgURL, "center", "cover", "brightness(0.3)", apiURLPath)
 	} else {
-		html, err = j.getSessionsiFrame(sessions, theme, apiURL, limit, activeWithinSeconds)
+		html, err = j.getSessionsiFrame(sessions, theme, apiURL, limit, activeWithinSeconds, excludedUsersParam)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": fmt.Errorf("couldn't create HTML code: %s", err.Error())})
 			return
@@ -84,7 +92,7 @@ func (j *Jellyfin) GetSessionsiFrame(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html", []byte(html))
 }
 
-func (j *Jellyfin) getSessionsiFrame(sessions []*Session, theme, apiURL string, limit, activeWithinSeconds int) ([]byte, error) {
+func (j *Jellyfin) getSessionsiFrame(sessions []*Session, theme, apiURL string, limit, activeWithinSeconds int, excludedUsers string) ([]byte, error) {
 	html := `
 <!doctype html>
 <html lang="en">
@@ -248,7 +256,7 @@ func (j *Jellyfin) getSessionsiFrame(sessions []*Session, theme, apiURL string, 
 
         async function fetchData() {
             try {
-                var url = '{{ .APIURL }}/v1/hash/jellyfin/sessions?limit={{ .APILimit }}{{ if .ActiveWithinSeconds }}&activeWithinSeconds={{ .ActiveWithinSeconds }}{{ end }}';
+                var url = '{{ .APIURL }}/v1/hash/jellyfin/sessions?limit={{ .APILimit }}{{ if .ActiveWithinSeconds }}&activeWithinSeconds={{ .ActiveWithinSeconds }}{{ end }}{{ if .ExcludedUsers }}&excludedUsers={{ .ExcludedUsers }}{{ end }}';
                 const response = await fetch(url);
                 const data = await response.json();
 
@@ -267,7 +275,7 @@ func (j *Jellyfin) getSessionsiFrame(sessions []*Session, theme, apiURL string, 
 
         function fetchAndUpdate() {
             fetchData();
-            setTimeout(fetchAndUpdate, 3000); // 3 seconds
+            setTimeout(fetchAndUpdate, 10000); // 10 seconds
         }
 
         {{ if .APIURL }}
@@ -302,14 +310,17 @@ func (j *Jellyfin) getSessionsiFrame(sessions []*Session, theme, apiURL string, 
             {{ end }}
             
             <div class="labels-div">
-                {{ if and .PlayState.PositionTicks .NowPlayingItem.RunTimeTicks }}
-                    <span class="info-label">
+                {{ if .NowPlayingItem.RunTimeTicks }}
+                    <span class="info-label playback-progress"
+                        data-position-ticks="{{ .PlayState.PositionTicks }}"
+                        data-runtime-ticks="{{ .NowPlayingItem.RunTimeTicks }}"
+                        data-paused="{{ .PlayState.IsPaused }}">
                         {{ if .PlayState.IsPaused }}
                             <i class="fa-solid fa-pause"></i>
                         {{ else }}
                             <i class="fa-solid fa-play"></i>
                         {{ end }}
-                        {{ formatTime .PlayState.PositionTicks }}/{{ formatTime .NowPlayingItem.RunTimeTicks }}
+                        <span class="progress-time">{{ formatTime .PlayState.PositionTicks }}/{{ formatTime .NowPlayingItem.RunTimeTicks }}</span>
                     </span>
                 {{ end }}
             </div>
@@ -328,6 +339,42 @@ func (j *Jellyfin) getSessionsiFrame(sessions []*Session, theme, apiURL string, 
     {{ end }}
 {{ end }}
 
+<script>
+    // The playback position is not part of the hash, so the page only reloads when
+    // sessions start, stop, pause or resume. Between reloads, advance the time here.
+    (function () {
+        const TICKS_PER_SECOND = 10000000;
+        const loadedAt = Date.now();
+
+        function pad(n) {
+            return String(n).padStart(2, '0');
+        }
+
+        function formatTime(totalSeconds) {
+            totalSeconds = Math.max(0, Math.floor(totalSeconds));
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            return pad(hours) + ':' + pad(minutes) + ':' + pad(seconds);
+        }
+
+        function updateProgress() {
+            const elapsed = (Date.now() - loadedAt) / 1000;
+            document.querySelectorAll('.playback-progress').forEach(function (el) {
+                const position = Number(el.dataset.positionTicks) / TICKS_PER_SECOND;
+                const runtime = Number(el.dataset.runtimeTicks) / TICKS_PER_SECOND;
+                const paused = el.dataset.paused === 'true';
+                const current = paused ? position : Math.min(position + elapsed, runtime);
+
+                el.querySelector('.progress-time').textContent = formatTime(current) + '/' + formatTime(runtime);
+            });
+        }
+
+        setInterval(updateProgress, 1000);
+    })();
+</script>
+</body>
+</html>
 `
 	// Homarr theme
 	scrollbarThumbBackgroundColor := "#d1dbe3"
@@ -343,6 +390,7 @@ func (j *Jellyfin) getSessionsiFrame(sessions []*Session, theme, apiURL string, 
 		APIURL:                        apiURL,
 		APILimit:                      limit,
 		ActiveWithinSeconds:           activeWithinSeconds,
+		ExcludedUsers:                 url.QueryEscape(excludedUsers),
 		ScrollbarThumbBackgroundColor: scrollbarThumbBackgroundColor,
 		ScrollbarTrackBackgroundColor: scrollbarTrackBackgroundColor,
 	}
@@ -376,6 +424,7 @@ type sessionsiframeTemplateData struct {
 	APIURL                        string
 	ScrollbarThumbBackgroundColor string
 	ScrollbarTrackBackgroundColor string
+	ExcludedUsers                 string
 	APILimit                      int
 	ActiveWithinSeconds           int
 }
@@ -406,13 +455,61 @@ func (j *Jellyfin) GetSessionsHash(c *gin.Context) {
 		}
 	}
 
-	sessions, err := j.GetSessions(limit, activeWithinSeconds)
+	excludedUsers := parseExcludedUsers(c.Query("excludedUsers"))
+
+	sessions, err := j.GetSessions(limit, activeWithinSeconds, excludedUsers)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 
-	hash := sources.GetHash(sessions, time.Now().Format("2006-01-02"))
+	hash := getSessionsHash(sessions)
 
 	c.JSON(http.StatusOK, gin.H{"hash": fmt.Sprintf("%x", hash)})
+}
+
+// sessionHashEntry holds only the session fields that should trigger an iframe reload.
+// It has no pointers (GetHash formats with %v, which would print memory addresses)
+// and no playback position (it changes on every poll and is advanced client-side instead).
+type sessionHashEntry struct {
+	UserID   string
+	ItemID   string
+	IsPaused bool
+}
+
+// getSessionsHash returns a hash that only changes when a session starts, stops, pauses or resumes.
+func getSessionsHash(sessions []*Session) [32]byte {
+	entries := make([]sessionHashEntry, 0, len(sessions))
+	for _, session := range sessions {
+		if session.NowPlayingItem == nil {
+			continue
+		}
+		entries = append(entries, sessionHashEntry{
+			UserID:   session.UserID,
+			ItemID:   session.NowPlayingItem.ID,
+			IsPaused: session.PlayState.IsPaused,
+		})
+	}
+
+	// Jellyfin doesn't guarantee the order of sessions, so sort them to keep the hash stable
+	sort.Slice(entries, func(a, b int) bool {
+		if entries[a].UserID != entries[b].UserID {
+			return entries[a].UserID < entries[b].UserID
+		}
+		return entries[a].ItemID < entries[b].ItemID
+	})
+
+	return sources.GetHash(entries, time.Now().Format("2006-01-02"))
+}
+
+// parseExcludedUsers turns a comma-separated list of usernames into a set of lowercase usernames.
+func parseExcludedUsers(raw string) map[string]bool {
+	excludedUsers := make(map[string]bool)
+	for _, name := range strings.Split(raw, ",") {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "" {
+			excludedUsers[name] = true
+		}
+	}
+	return excludedUsers
 }

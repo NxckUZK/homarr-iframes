@@ -35,6 +35,7 @@ func HashRoutes(group *gin.RouterGroup) {
 // @Produce json
 // @Param limit query int false "Limits the number of items in the iFrame." Example(20)
 // @Param activeWithinSeconds query int false "Only include sessions that have been active within this many seconds. Defaults to 60 if not specified or less than 1." Example(300)
+// @Param excludedUsers query string false "Comma-separated list of usernames whose sessions are hidden (case-insensitive)." Example(admin,test)
 // @Router /hash/jellyfin/sessions [get]
 func JellyfinSessionsHashHandler(c *gin.Context) {
 	j, err := jellyfin.New()

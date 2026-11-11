@@ -51,7 +51,7 @@ func TestGetSessions(t *testing.T) {
 		t.Fatalf("error creating Jellyfin instance: %v", err)
 	}
 
-	sessions, err := j.GetSessions(20, 3600)
+	sessions, err := j.GetSessions(20, 3600, nil)
 	if err != nil {
 		t.Fatalf("error getting sessions: %v", err)
 	}
